@@ -68,6 +68,8 @@ const (
 	ExpectedPassword                  = "42"
 )
 
+var expectedHeaders = map[string]string{"Header1": "Value1", "Header2": "Value2"}
+
 var invalidHTTPClientConfigs = []struct {
 	httpClientConfigFile string
 	errMsg               string
@@ -196,6 +198,26 @@ func TestNewClientFromConfig(t *testing.T) {
 				} else {
 					fmt.Fprint(w, ExpectedMessage)
 				}
+			},
+		},
+		{
+			clientConfig: HTTPClientConfig{
+				Headers: expectedHeaders,
+				TLSConfig: TLSConfig{
+					CAFile:             TLSCAChainPath,
+					CertFile:           ClientCertificatePath,
+					KeyFile:            ClientKeyNoPassPath,
+					ServerName:         "",
+					InsecureSkipVerify: false},
+			},
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				for key, value := range expectedHeaders {
+					if r.Header.Get(key) != value {
+						fmt.Fprintf(w, "The received Headers (%s) does not contain all expected headers (%s).", r.Header, expectedHeaders)
+						return
+					}
+				}
+				fmt.Fprint(w, ExpectedMessage)
 			},
 		}, {
 			clientConfig: HTTPClientConfig{
@@ -1058,9 +1080,46 @@ func TestValidateHTTPConfig(t *testing.T) {
 	if err != nil {
 		t.Errorf("Error loading HTTP client config: %v", err)
 	}
-	err = cfg.Validate()
-	if err != nil {
-		t.Fatalf("Error validating %s: %s", "testdata/http.conf.good.yml", err)
+
+	var testCases = []struct {
+		name             string
+		clientConfig     HTTPClientConfig
+		expectedErrorMsg string
+	}{
+		{
+			name:             "Valid Config",
+			clientConfig:     *cfg,
+			expectedErrorMsg: "",
+		},
+		{
+			name: "Invalid Auth Header Config",
+			clientConfig: HTTPClientConfig{
+				Headers: map[string]string{"Authorization": "auth"},
+			},
+			expectedErrorMsg: "authorization header must be changed via the basic_auth, authorization, oauth2, or sigv4 parameter",
+		},
+		{
+			name: "Invalid User Agent Config",
+			clientConfig: HTTPClientConfig{
+				Headers: map[string]string{"uSer-Agent": "ua"},
+			},
+			expectedErrorMsg: "uSer-Agent is a reserved header. It must not be changed",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			errMsg := ""
+			err = tc.clientConfig.Validate()
+
+			if err != nil {
+				errMsg = err.Error()
+			}
+
+			if errMsg != tc.expectedErrorMsg {
+				t.Fatalf("Error validating %s: %s", tc.clientConfig, err)
+			}
+		})
 	}
 }
 

@@ -39,6 +39,32 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+var (
+	reservedHeaders = map[string]struct{}{
+		// NOTE: authorization is checked specially,
+		// see HTTPClientConfig.Validate.
+		// "authorization":                  {},
+		"host":                              {},
+		"content-encoding":                  {},
+		"content-length":                    {},
+		"content-type":                      {},
+		"user-agent":                        {},
+		"connection":                        {},
+		"keep-alive":                        {},
+		"proxy-authenticate":                {},
+		"proxy-authorization":               {},
+		"www-authenticate":                  {},
+		"accept-encoding":                   {},
+		"x-prometheus-remote-write-version": {},
+		"x-prometheus-remote-read-version":  {},
+
+		// Added by SigV4.
+		"x-amz-date":           {},
+		"x-amz-security-token": {},
+		"x-amz-content-sha256": {},
+	}
+)
+
 // DefaultHTTPClientConfig is the default HTTP client configuration.
 var DefaultHTTPClientConfig = HTTPClientConfig{
 	FollowRedirects: true,
@@ -177,6 +203,8 @@ type HTTPClientConfig struct {
 	// The omitempty flag is not set, because it would be hidden from the
 	// marshalled configuration when set to false.
 	FollowRedirects bool `yaml:"follow_redirects" json:"follow_redirects"`
+	// Extra Headers to be added on the Http Request
+	Headers map[string]string `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
 
 // SetDirectory joins any relative file paths with dir.
@@ -250,6 +278,18 @@ func (c *HTTPClientConfig) Validate() error {
 			return fmt.Errorf("at most one of oauth2 client_secret & client_secret_file must be configured")
 		}
 	}
+
+	if c.Headers != nil {
+		for header := range c.Headers {
+			if strings.ToLower(header) == "authorization" {
+				return fmt.Errorf("authorization header must be changed via the basic_auth, authorization, oauth2, or sigv4 parameter")
+			}
+			if _, ok := reservedHeaders[strings.ToLower(header)]; ok {
+				return fmt.Errorf("%s is a reserved header. It must not be changed", header)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -418,6 +458,10 @@ func NewRoundTripperFromConfig(cfg HTTPClientConfig, name string, optFuncs ...HT
 			rt = NewBasicAuthRoundTripper(cfg.BasicAuth.Username, cfg.BasicAuth.Password, cfg.BasicAuth.PasswordFile, rt)
 		}
 
+		if cfg.Headers != nil && len(cfg.Headers) > 0 {
+			rt = NewHeadersRoundTripper(cfg.Headers, rt)
+		}
+
 		if cfg.OAuth2 != nil {
 			rt = NewOAuth2RoundTripper(cfg.OAuth2, rt)
 		}
@@ -436,6 +480,26 @@ func NewRoundTripperFromConfig(cfg HTTPClientConfig, name string, optFuncs ...HT
 	}
 
 	return NewTLSRoundTripper(tlsConfig, cfg.TLSConfig.CAFile, newRT)
+}
+
+type headersRoundTripper struct {
+	headers map[string]string
+	rt      http.RoundTripper
+}
+
+func (rt *headersRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = cloneRequest(req)
+	if len(rt.headers) > 0 {
+		for key, value := range rt.headers {
+			req.Header.Set(key, value)
+		}
+	}
+	return rt.rt.RoundTrip(req)
+}
+
+// NewHeadersRoundTripper adds the provided headers to a request
+func NewHeadersRoundTripper(headers map[string]string, rt http.RoundTripper) http.RoundTripper {
+	return &headersRoundTripper{headers, rt}
 }
 
 type authorizationCredentialsRoundTripper struct {
